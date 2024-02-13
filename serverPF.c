@@ -113,6 +113,22 @@ void handle_get_command(int sockfd, struct sockaddr_in *cli_addr, char *filename
 }
 
 
+void handle_delete_command(int sockfd, struct sockaddr_in *cli_addr, char *filename) {
+    // Attempt to delete the file
+    if (remove(filename) == 0) {
+        // If file deletion is successful
+        char *msg = "File deleted successfully";
+        sendto(sockfd, msg, strlen(msg) + 1, 0, (struct sockaddr *)cli_addr, sizeof(*cli_addr));
+    } else {
+        // If the file does not exist or cannot be deleted
+        char *msg = "File not present or cannot be deleted";
+        sendto(sockfd, msg, strlen(msg) + 1, 0, (struct sockaddr *)cli_addr, sizeof(*cli_addr));
+    }
+}
+
+
+
+
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -125,7 +141,6 @@ int main(int argc, char *argv[]) {
     socklen_t slen = sizeof(si_other);
     char buf[BUFFER_SIZE], command[10], filename[BUFFER_SIZE - 10];
 
-    // Create a UDP socket
     int sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sockfd == -1) {
         die("socket");
@@ -136,32 +151,30 @@ int main(int argc, char *argv[]) {
     si_me.sin_port = htons(port);
     si_me.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    // Bind socket to port
-    if (bind(sockfd, (struct sockaddr*)&si_me, sizeof(si_me)) == -1) {
+    if (bind(sockfd, (struct sockaddr *)&si_me, sizeof(si_me)) == -1) {
         die("bind");
     }
 
     printf("Server listening on port %d\n", port);
 
-    // Listen for incoming commands
     while (1) {
-        memset(buf, 0, BUFFER_SIZE); // Clear buffer
+        memset(buf, 0, BUFFER_SIZE);
         if (recvfrom(sockfd, buf, BUFFER_SIZE, 0, (struct sockaddr *)&si_other, &slen) == -1) {
             die("recvfrom()");
         }
 
-        // Assuming the command and possibly a filename come in the same packet
-        sscanf(buf, "%s %s", command, filename); // This is a simplistic parsing approach
+        sscanf(buf, "%s %s", command, filename);
         printf("Received command: '%s', Filename: '%s'\n", command, filename);
 
         if (strcmp(command, "put") == 0) {
-            printf("Received 'put' command. Starting file reception...\n");
-            receive_file(sockfd);
+            receive_file(sockfd);  // Your existing implementation
         } else if (strcmp(command, "get") == 0) {
-            printf("Received 'get' command. Sending file '%s'...\n", filename);
             handle_get_command(sockfd, &si_other, filename);
+        } else if (strcmp(command, "delete") == 0) {
+            handle_delete_command(sockfd, &si_other, filename);
         } else {
-            printf("Unknown or unsupported command received: %s\n", command);
+            char *msg = "Unknown or unsupported command";
+            sendto(sockfd, msg, strlen(msg) + 1, 0, (struct sockaddr *)&si_other, sizeof(si_other));
         }
     }
 

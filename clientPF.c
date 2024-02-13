@@ -62,6 +62,61 @@ void send_file(int sockfd, struct sockaddr_in *si_other,const char *file_name)
     fclose(file_in);
 }
 
+
+void request_file(int sockfd, struct sockaddr_in *serv_addr, const char *filename) {
+    // Send "get" command and filename to server
+    char command[BUFFER_SIZE];
+    snprintf(command, sizeof(command), "get %s", filename);
+    sendto(sockfd, command, strlen(command) + 1, 0, (struct sockaddr *)serv_addr, sizeof(*serv_addr));
+
+    // Prepare to receive file or message from server
+    char buffer[BUFFER_SIZE];
+    int expected_seq = 0;
+    FILE *file_out = fopen("download.txt", "wb");
+    if (file_out == NULL) {
+        die("Failed to open file for writing");
+    }
+
+    while (1) {
+        struct sockaddr_in from;
+        socklen_t fromlen = sizeof(from);
+        int recv_len = recvfrom(sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&from, &fromlen);
+        if (recv_len < 0) {
+            die("recvfrom()");
+        }
+        buffer[recv_len] = '\0'; // Null-terminate received string
+
+        // Check for "File not present" message
+        if (strcmp(buffer + sizeof(int), "File not present") == 0) {
+            printf("Server: %s\n", buffer + sizeof(int));
+            fclose(file_out);
+            remove("download.txt"); // Delete the file as it's not valid
+            break;
+        }
+
+        // Process received file packet
+        int seq_num = *(int *)buffer;
+        if (seq_num == expected_seq) {
+            fwrite(buffer + sizeof(int), 1, recv_len - sizeof(int), file_out);
+            expected_seq++;
+        }
+
+        // Send ACK
+        sendto(sockfd, &seq_num, sizeof(seq_num), 0, (struct sockaddr *)&from, fromlen);
+        
+        if (recv_len < BUFFER_SIZE) {
+            printf("File transfer complete.\n");
+            break;
+        }
+    }
+
+    fclose(file_out);
+}
+
+
+
+
+
 int main(int argc, char *argv[]) {
     printf("Supported commands: put, get, ls, delete\n");
     printf("Write the input in this format: <server_ip> <port> <command> <filename>\n");
@@ -72,30 +127,36 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // Check if the command is "put"
-    if (strcmp(argv[3], "put") == 0) {
-        // Command-specific logic for "put"
-        const char *server_ip = argv[1];
-        int port = atoi(argv[2]);
-        const char *file_name = argv[4];
+    const char *server_ip = argv[1];
+    int port = atoi(argv[2]);
+    const char *command = argv[3];
+    const char *file_name = argv[4];
 
-        // Socket creation, command sending, and file sending logic
-        // ...
-    } 
-    else if (strcmp(argv[3], "get") == 0) {
-        // Logic for "get" command
+    // Create a socket
+    int sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sockfd == -1) {
+        die("socket creation failed");
     }
-    else if (strcmp(argv[3], "ls") == 0) {
-        // Logic for "ls" command
+
+    // Set up the server address structure
+    struct sockaddr_in si_other;
+    memset(&si_other, 0, sizeof(si_other));
+    si_other.sin_family = AF_INET;
+    si_other.sin_port = htons(port);
+    if (inet_aton(server_ip, &si_other.sin_addr) == 0) {
+        die("inet_aton() failed");
     }
-    else if (strcmp(argv[3], "delete") == 0) {
-        // Logic for "delete" command
-    }
-    else {
-        // If the command is not recognized
-        fprintf(stderr, "Unsupported command: %s\n", argv[3]);
+
+    if (strcmp(command, "put") == 0) {
+        send_file(sockfd, &si_other, file_name);
+    } else if (strcmp(command, "get") == 0) {
+        request_file(sockfd, &si_other, file_name);
+    } else {
+        fprintf(stderr, "Unsupported command: %s\n", command);
+        close(sockfd);
         exit(EXIT_FAILURE);
     }
 
+    close(sockfd);
     return 0;
 }

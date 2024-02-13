@@ -4,7 +4,8 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
+#include <dirent.h> 
+int serverRunning = 1; 
 #define WINDOW_SIZE 4
 #define BUFFER_SIZE 1024
 #define TIMEOUT 2 // Timeout in seconds, for demonstration purposes
@@ -57,10 +58,6 @@ void receive_file(int sockfd) {
 
     fclose(file_out);
 }
-
-
-
-
 
 void handle_get_command(int sockfd, struct sockaddr_in *cli_addr, char *filename) {
     FILE *file = fopen(filename, "rb");
@@ -126,9 +123,33 @@ void handle_delete_command(int sockfd, struct sockaddr_in *cli_addr, char *filen
     }
 }
 
+void handle_ls_command(int sockfd, struct sockaddr_in *cli_addr) {
+    DIR *d;
+    struct dirent *dir;
+    d = opendir(".");  // Open the current working directory
+    if (d) {
+        char filesList[4096] = "";  // Assuming the list fits in 4096 bytes
+        while ((dir = readdir(d)) != NULL) {
+            if (dir->d_type == DT_REG) {  // If the entry is a regular file
+                strcat(filesList, dir->d_name);
+                strcat(filesList, "\n");  // Separate file names with a newline
+            }
+        }
+        closedir(d);
 
+        // Send the list of files to the client
+        sendto(sockfd, filesList, strlen(filesList) + 1, 0, (struct sockaddr *)cli_addr, sizeof(*cli_addr));
+    } else {
+        char *msg = "Failed to open directory.";
+        sendto(sockfd, msg, strlen(msg) + 1, 0, (struct sockaddr *)cli_addr, sizeof(*cli_addr));
+    }
+}
 
-
+void handle_exit_command(int sockfd, struct sockaddr_in *cli_addr) {
+    char *goodbyeMsg = "Goodbye from the server.";
+    sendto(sockfd, goodbyeMsg, strlen(goodbyeMsg) + 1, 0, (struct sockaddr *)cli_addr, sizeof(*cli_addr));
+    serverRunning = 0; // Signal the server to stop
+}
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -157,27 +178,36 @@ int main(int argc, char *argv[]) {
 
     printf("Server listening on port %d\n", port);
 
-    while (1) {
-        memset(buf, 0, BUFFER_SIZE);
+    while (serverRunning) {
+        memset(buf, 0, BUFFER_SIZE); // Clear buffer
         if (recvfrom(sockfd, buf, BUFFER_SIZE, 0, (struct sockaddr *)&si_other, &slen) == -1) {
             die("recvfrom()");
         }
+         
 
-        sscanf(buf, "%s %s", command, filename);
+    // Print the raw buffer contents
+    printf("Debug - Received buffer: '%s'\n", buf);
+
+        sscanf(buf, "%s %s", command, filename); // Extract command and filename
         printf("Received command: '%s', Filename: '%s'\n", command, filename);
 
-        if (strcmp(command, "put") == 0) {
-            receive_file(sockfd);  // Your existing implementation
+       if (strncmp(buf, "put", 3) == 0) {
+            printf("PUT command received. Starting file reception...\n");
+            receive_file(sockfd); // Call your function to receive and save the file
         } else if (strcmp(command, "get") == 0) {
             handle_get_command(sockfd, &si_other, filename);
         } else if (strcmp(command, "delete") == 0) {
             handle_delete_command(sockfd, &si_other, filename);
+        } else if (strcmp(command, "ls") == 0) {
+            handle_ls_command(sockfd, &si_other);
+        } else if (strcmp(command, "exit") == 0) {
+            handle_exit_command(sockfd, &si_other);
         } else {
-            char *msg = "Unknown or unsupported command";
-            sendto(sockfd, msg, strlen(msg) + 1, 0, (struct sockaddr *)&si_other, sizeof(si_other));
+            printf("Unknown or unsupported command received.\n");
         }
     }
 
+    printf("Server shutting down...\n");
     close(sockfd);
     return 0;
 }

@@ -1,4 +1,3 @@
-// client.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +15,11 @@ void die(const char *s) {
 }
 
 void send_file(int sockfd, struct sockaddr_in *si_other,const char *file_name)
- {
-
+ {  char command[BUFFER_SIZE];
+    snprintf(command, sizeof(command), "put %s", file_name);
+    
+    sendto(sockfd, command, strlen(command) + 1, 0, (struct sockaddr *)si_other, sizeof(*si_other));
+     printf("Sending file to server: %s\n", file_name); 
     FILE *file_in = fopen(file_name, "rb");
     if (file_in == NULL) {
         die("fopen");
@@ -27,7 +29,7 @@ void send_file(int sockfd, struct sockaddr_in *si_other,const char *file_name)
     int seq_num = 0, base = 0, window_packets[WINDOW_SIZE] = {0};
     socklen_t slen = sizeof(*si_other);
     struct timeval tv = {TIMEOUT, 0};
-    
+
     while (!feof(file_in) || base != seq_num) {
         while (seq_num < base + WINDOW_SIZE && !feof(file_in)) {
             int packet_size = fread(packet + sizeof(int), 1, BUFFER_SIZE - sizeof(int), file_in);
@@ -125,11 +127,34 @@ void request_delete(int sockfd, struct sockaddr_in *serv_addr, const char *filen
 }
 
 
+void request_ls(int sockfd, struct sockaddr_in *serv_addr) {
+    char command[BUFFER_SIZE] = "ls";
+    sendto(sockfd, command, strlen(command), 0, (struct sockaddr *)serv_addr, sizeof(*serv_addr));
+
+    // Buffer to receive the list of files
+    char filesList[4096];
+    recvfrom(sockfd, filesList, sizeof(filesList), 0, NULL, NULL);
+    printf("Files in the server's current directory:\n%s", filesList);
+}
+
+
+void send_exit_command(int sockfd, struct sockaddr_in *serv_addr) {
+    char exitCommand[BUFFER_SIZE] = "exit";
+    // Send the "exit" command to the server
+    sendto(sockfd, exitCommand, strlen(exitCommand), 0, (struct sockaddr *)serv_addr, sizeof(*serv_addr));
+
+    // Wait for the server's goodbye message
+    char serverReply[BUFFER_SIZE];
+    memset(serverReply, 0, BUFFER_SIZE); // Clear the buffer
+    recvfrom(sockfd, serverReply, BUFFER_SIZE, 0, NULL, NULL);
+    printf("Server says: %s\n", serverReply);
+}
+
 int main(int argc, char *argv[]) {
     printf("Supported commands: put, get, ls, delete\n");
     printf("Write the input in this format: <server_ip> <port> <command> <filename>\n");
 
-    if (argc != 5) {
+    if (argc < 4) {
         fprintf(stderr, "Usage: %s <server_ip> <port> <command> <filename>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
@@ -158,7 +183,16 @@ int main(int argc, char *argv[]) {
         request_file(sockfd, &si_other, file_name);
     } else if (strcmp(command, "delete") == 0) {
         request_delete(sockfd, &si_other, file_name);
-    } else {
+    }
+     else if (strcmp(command, "ls") == 0) {
+    request_ls(sockfd, &si_other);
+    }
+    else if (strcmp(command, "exit") == 0) {
+        send_exit_command(sockfd, &si_other);
+        close(sockfd); // It's safe to close the socket here if exiting
+        exit(0); // Exit after sending the exit command and receiving a response
+    }
+    else {
         fprintf(stderr, "Unsupported command: %s\n", command);
     }
 

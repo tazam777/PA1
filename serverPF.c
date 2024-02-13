@@ -59,6 +59,61 @@ void receive_file(int sockfd) {
 }
 
 
+
+
+
+void handle_get_command(int sockfd, struct sockaddr_in *cli_addr, char *filename) {
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL) {
+        // File doesn't exist, send a message back to the client
+        char *msg = "File not present";
+        sendto(sockfd, msg, strlen(msg) + 1, 0, (struct sockaddr *)cli_addr, sizeof(*cli_addr));
+        die("fopen");
+        return;
+    }
+
+    // File exists, start sending it using Go-Back-N ARQ
+     char packet[BUFFER_SIZE], window[WINDOW_SIZE][BUFFER_SIZE];
+    int seq_num = 0, base = 0, window_packets[WINDOW_SIZE] = {0};
+    socklen_t slen = sizeof(*cli_addr);
+    struct timeval tv = {TIMEOUT, 0};
+    
+   while (!feof(file) || base != seq_num) {
+        while (seq_num < base + WINDOW_SIZE && !feof(file)) {
+            int packet_size = fread(packet + sizeof(int), 1, BUFFER_SIZE - sizeof(int), file);
+            *(int*)packet = seq_num;
+            memcpy(window[seq_num % WINDOW_SIZE], packet, packet_size + sizeof(int));
+            window_packets[seq_num % WINDOW_SIZE] = packet_size + sizeof(int);
+
+            if (sendto(sockfd, packet, packet_size + sizeof(int), 0, (struct sockaddr*)cli_addr, slen) == -1) {
+                die("sendto()");
+            }
+            if (base == seq_num) {
+                setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            }
+            seq_num++;
+        }
+
+        int ack;
+        if (recv(sockfd, &ack, sizeof(int), 0) == -1) {
+            printf("Timeout, resending window\n");
+            for (int i = base; i < seq_num; i++) {
+                int idx = i % WINDOW_SIZE;
+                if (sendto(sockfd, window[idx], window_packets[idx], 0, (struct sockaddr*)cli_addr, slen) == -1) {
+                    die("sendto() in resending");
+                }
+            }
+        } else {
+            printf("Received ACK: %d\n", ack);
+            base = ack + 1;
+        }
+    }
+
+    fclose(file);
+}
+
+
+
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <port>\n", argv[0]);
@@ -68,7 +123,7 @@ int main(int argc, char *argv[]) {
     int port = atoi(argv[1]);
     struct sockaddr_in si_me, si_other;
     socklen_t slen = sizeof(si_other);
-    char buf[BUFFER_SIZE];
+    char buf[BUFFER_SIZE], command[10], filename[BUFFER_SIZE - 10];
 
     // Create a UDP socket
     int sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -76,9 +131,7 @@ int main(int argc, char *argv[]) {
         die("socket");
     }
 
-    // Zero out the structure
-    memset((char *)&si_me, 0, sizeof(si_me));
-
+    memset(&si_me, 0, sizeof(si_me));
     si_me.sin_family = AF_INET;
     si_me.sin_port = htons(port);
     si_me.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -92,18 +145,23 @@ int main(int argc, char *argv[]) {
 
     // Listen for incoming commands
     while (1) {
+        memset(buf, 0, BUFFER_SIZE); // Clear buffer
         if (recvfrom(sockfd, buf, BUFFER_SIZE, 0, (struct sockaddr *)&si_other, &slen) == -1) {
             die("recvfrom()");
         }
-        printf("Received command: '%s'\n", buf);
 
-        // Check if the command is "put"
-        if (strncmp(buf, "put", 3) == 0) {
+        // Assuming the command and possibly a filename come in the same packet
+        sscanf(buf, "%s %s", command, filename); // This is a simplistic parsing approach
+        printf("Received command: '%s', Filename: '%s'\n", command, filename);
+
+        if (strcmp(command, "put") == 0) {
             printf("Received 'put' command. Starting file reception...\n");
-            receive_file(sockfd); // Call the function to receive the file
-            break; // Optional: break if you only expect to receive one file
+            receive_file(sockfd);
+        } else if (strcmp(command, "get") == 0) {
+            printf("Received 'get' command. Sending file '%s'...\n", filename);
+            handle_get_command(sockfd, &si_other, filename);
         } else {
-            printf("Unknown command received.\n");
+            printf("Unknown or unsupported command received: %s\n", command);
         }
     }
 

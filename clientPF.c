@@ -114,14 +114,21 @@ void request_file(int sockfd, struct sockaddr_in *serv_addr, const char *filenam
 }
 
 
+void request_delete(int sockfd, struct sockaddr_in *serv_addr, const char *filename) {
+    char command[BUFFER_SIZE];
+    snprintf(command, sizeof(command), "delete %s", filename);
+    sendto(sockfd, command, strlen(command), 0, (struct sockaddr *)serv_addr, sizeof(*serv_addr));
 
+    char buffer[BUFFER_SIZE];
+    recvfrom(sockfd, buffer, BUFFER_SIZE, 0, NULL, NULL);
+    printf("%s\n", buffer); // Print the server's response to the command
+}
 
 
 int main(int argc, char *argv[]) {
     printf("Supported commands: put, get, ls, delete\n");
     printf("Write the input in this format: <server_ip> <port> <command> <filename>\n");
 
-    // Check for the correct number of arguments
     if (argc != 5) {
         fprintf(stderr, "Usage: %s <server_ip> <port> <command> <filename>\n", argv[0]);
         exit(EXIT_FAILURE);
@@ -132,13 +139,11 @@ int main(int argc, char *argv[]) {
     const char *command = argv[3];
     const char *file_name = argv[4];
 
-    // Create a socket
     int sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sockfd == -1) {
         die("socket creation failed");
     }
 
-    // Set up the server address structure
     struct sockaddr_in si_other;
     memset(&si_other, 0, sizeof(si_other));
     si_other.sin_family = AF_INET;
@@ -151,10 +156,10 @@ int main(int argc, char *argv[]) {
         send_file(sockfd, &si_other, file_name);
     } else if (strcmp(command, "get") == 0) {
         request_file(sockfd, &si_other, file_name);
+    } else if (strcmp(command, "delete") == 0) {
+        request_delete(sockfd, &si_other, file_name);
     } else {
         fprintf(stderr, "Unsupported command: %s\n", command);
-        close(sockfd);
-        exit(EXIT_FAILURE);
     }
 
     close(sockfd);

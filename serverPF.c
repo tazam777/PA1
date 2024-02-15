@@ -5,6 +5,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <dirent.h> 
+#include <errno.h>
+#include <sys/time.h>
 int serverRunning = 1; 
 #define WINDOW_SIZE 4
 #define BUFFER_SIZE 1024
@@ -24,91 +26,126 @@ void send_ack(int sockfd, struct sockaddr_in *cli_addr, int ack_num) {
 void receive_file(int sockfd) {
     struct sockaddr_in si_other;
     socklen_t slen = sizeof(si_other);
-    char buf[BUFFER_SIZE];
+    char buffer[BUFFER_SIZE];
     int expected_seq = 0, recv_len;
     FILE* file_out = fopen("received.txt", "wb");
     if (file_out == NULL) {
         die("Failed to open file for writing");
     }
 
+    const int window_size = WINDOW_SIZE;
+    struct timeval tv = {TIMEOUT, 0}; // Timeout structure for select
+    fd_set readfds; // Set of file descriptors for select
+
     while (1) {
-        memset(buf, 0, BUFFER_SIZE);
-        if ((recv_len = recvfrom(sockfd, buf, BUFFER_SIZE, 0, (struct sockaddr *)&si_other, &slen)) == -1) {
-            die("recvfrom()");
+        FD_ZERO(&readfds); // Clear the set
+        FD_SET(sockfd, &readfds); // Add our descriptor to the set
+
+        int activity = select(sockfd + 1, &readfds, NULL, NULL, &tv); // Wait for activity
+        if ((activity < 0) && (errno != EINTR)) {
+            die("select error");
         }
 
-        int seq_num = *(int*)buf;
-        if (seq_num == expected_seq) {
-            if (fwrite(buf + sizeof(int), 1, recv_len - sizeof(int), file_out) < 1) {
-                die("fwrite()");
+        if (activity == 0) {
+            // Timeout occurred, logic to handle timeout
+            printf("Timeout, but no need to resend in Go-Back-N receiver.\n");
+            continue; // Go-Back-N receiver does not resend packets, so we just continue listening
+        }
+
+        if (FD_ISSET(sockfd, &readfds)) {
+            struct sockaddr_in from;
+            socklen_t fromlen = sizeof(from);
+            recv_len = recvfrom(sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&from, &fromlen);
+            if (recv_len < 0) {
+                die("recvfrom()");
             }
-            expected_seq++;
-        }
 
-        // Send ACK
-        if (sendto(sockfd, &seq_num, sizeof(int), 0, (struct sockaddr*)&si_other, slen) == -1) {
-            die("sendto()");
-        }
+            int seq_num = *(int *)buffer; // Extract sequence number
+            if (seq_num == expected_seq) {
+                fwrite(buffer + sizeof(int), 1, recv_len - sizeof(int), file_out);
+                expected_seq++; // Increment for the next expected packet
+            }
 
-        if (recv_len < BUFFER_SIZE - sizeof(int)) {
-            printf("File transfer complete.\n");
-            break;
+            // Always send ACK for the most recently received in-order packet
+            sendto(sockfd, &expected_seq, sizeof(expected_seq), 0, (struct sockaddr *)&from, fromlen);
+
+            if (recv_len < BUFFER_SIZE) {
+                printf("File transfer complete.\n");
+                break; // End of file reached
+            }
         }
     }
 
     fclose(file_out);
 }
-
 void handle_get_command(int sockfd, struct sockaddr_in *cli_addr, char *filename) {
+    // Open the file for reading
     FILE *file = fopen(filename, "rb");
     if (file == NULL) {
-        // File doesn't exist, send a message back to the client
+        // If the file doesn't exist, inform the client
         char *msg = "File not present";
         sendto(sockfd, msg, strlen(msg) + 1, 0, (struct sockaddr *)cli_addr, sizeof(*cli_addr));
-        die("fopen");
         return;
     }
 
-    // File exists, start sending it using Go-Back-N ARQ
-     char packet[BUFFER_SIZE], window[WINDOW_SIZE][BUFFER_SIZE];
+    // Initialize the window for Go-Back-N
+    char packet[BUFFER_SIZE], window[WINDOW_SIZE][BUFFER_SIZE];
     int seq_num = 0, base = 0, window_packets[WINDOW_SIZE] = {0};
     socklen_t slen = sizeof(*cli_addr);
-    struct timeval tv = {TIMEOUT, 0};
+    struct timeval tv = {TIMEOUT, 0}; // Timeout for ACKs
     
-   while (!feof(file) || base != seq_num) {
+    fd_set readfds; // Set of socket file descriptors for select()
+    int activity;
+
+    // Loop to read file contents and send them to the client
+    while (!feof(file) || base != seq_num) {
+        FD_ZERO(&readfds);  // Clear the socket set
+        FD_SET(sockfd, &readfds);  // Add sockfd to the socket set
+        
+        // Fill the window and send packets
         while (seq_num < base + WINDOW_SIZE && !feof(file)) {
             int packet_size = fread(packet + sizeof(int), 1, BUFFER_SIZE - sizeof(int), file);
-            *(int*)packet = seq_num;
+            *(int *)packet = seq_num;
             memcpy(window[seq_num % WINDOW_SIZE], packet, packet_size + sizeof(int));
             window_packets[seq_num % WINDOW_SIZE] = packet_size + sizeof(int);
 
-            if (sendto(sockfd, packet, packet_size + sizeof(int), 0, (struct sockaddr*)cli_addr, slen) == -1) {
+            if (sendto(sockfd, packet, packet_size + sizeof(int), 0, (struct sockaddr *)cli_addr, slen) == -1) {
                 die("sendto()");
-            }
-            if (base == seq_num) {
-                setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
             }
             seq_num++;
         }
 
-        int ack;
-        if (recv(sockfd, &ack, sizeof(int), 0) == -1) {
-            printf("Timeout, resending window\n");
+        // Set timeout for ACK reception using select
+        tv.tv_sec = TIMEOUT;
+        tv.tv_usec = 0;
+        activity = select(sockfd + 1, &readfds, NULL, NULL, &tv);
+
+        // If timeout or error occurs, go back to the start of the window and resend
+        if (activity < 0 && errno != EINTR) {
+            printf("Select error.\n");
+        } else if (activity == 0) {
+            printf("Timeout occurred. Resending window.\n");
             for (int i = base; i < seq_num; i++) {
                 int idx = i % WINDOW_SIZE;
-                if (sendto(sockfd, window[idx], window_packets[idx], 0, (struct sockaddr*)cli_addr, slen) == -1) {
+                if (sendto(sockfd, window[idx], window_packets[idx], 0, (struct sockaddr *)cli_addr, slen) == -1) {
                     die("sendto() in resending");
                 }
             }
         } else {
-            printf("Received ACK: %d\n", ack);
+            // If ACK is received, update the base
+            int ack;
+            if (recvfrom(sockfd, &ack, sizeof(int), 0, (struct sockaddr *)cli_addr, &slen) == -1) {
+                die("recvfrom() ack");
+            }
+            printf("Received ACK for packet %d\n", ack);
             base = ack + 1;
         }
     }
 
+    // Once the file is completely sent, close the file
     fclose(file);
+    printf("File '%s' has been sent successfully.\n", filename);
 }
-
 
 void handle_delete_command(int sockfd, struct sockaddr_in *cli_addr, char *filename) {
     // Attempt to delete the file

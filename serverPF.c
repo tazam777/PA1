@@ -10,7 +10,7 @@
 int serverRunning = 1; 
 #define WINDOW_SIZE 4
 #define BUFFER_SIZE 1024
-#define TIMEOUT 2 // Timeout in seconds, for demonstration purposes
+#define TIMEOUT 2 
 
 void die(const char *s) {
     perror(s);
@@ -183,7 +183,7 @@ void handle_ls_command(int sockfd, struct sockaddr_in *cli_addr) {
 }
 
 void handle_exit_command(int sockfd, struct sockaddr_in *cli_addr) {
-    char *goodbyeMsg = "Goodbye from the server.";
+    char *goodbyeMsg = "Gentlemen, it has been a privilege playing with you tonight.Until next time See yaa!!!";
     sendto(sockfd, goodbyeMsg, strlen(goodbyeMsg) + 1, 0, (struct sockaddr *)cli_addr, sizeof(*cli_addr));
     serverRunning = 0; // Signal the server to stop
 }
@@ -193,7 +193,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Usage: %s <port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
-
+//The Socket creation and Binding code 
     int port = atoi(argv[1]);
     struct sockaddr_in si_me, si_other;
     socklen_t slen = sizeof(si_other);
@@ -222,7 +222,7 @@ int main(int argc, char *argv[]) {
         }
          
 
-    // Print the raw buffer contents
+    // Print the raw buffer contents for debug purpose as inititially the commands were not reaching buffer
     printf("Debug - Received buffer: '%s'\n", buf);
 
         sscanf(buf, "%s %s", command, filename); // Extract command and filename
@@ -230,7 +230,7 @@ int main(int argc, char *argv[]) {
 
        if (strncmp(buf, "put", 3) == 0) {
             printf("PUT command received. Starting file reception...\n");
-            receive_file(sockfd); // Call your function to receive and save the file
+            receive_file(sockfd); 
         } else if (strcmp(command, "get") == 0) {
             handle_get_command(sockfd, &si_other, filename);
         } else if (strcmp(command, "delete") == 0) {

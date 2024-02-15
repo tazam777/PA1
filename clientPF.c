@@ -11,6 +11,7 @@ int serverRunning = 1;
 #define WINDOW_SIZE 4
 #define BUFFER_SIZE 1024
 #define TIMEOUT 2 
+
 void die(const char *s) {
     perror(s);
     exit(1);
@@ -124,7 +125,7 @@ void request_file(int sockfd, struct sockaddr_in *serv_addr, const char *filenam
         }
 
         if (FD_ISSET(sockfd, &readfds)) {
-            // We have something to read from the socket
+            // Did this do that we have something to read from the socket
             struct sockaddr_in from;
             socklen_t fromlen = sizeof(from);
             int recv_len = recvfrom(sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&from, &fromlen);
@@ -193,7 +194,7 @@ void send_exit_command(int sockfd, struct sockaddr_in *serv_addr) {
 }
 
 int main(int argc, char *argv[]) {
- 
+ //Usage /<filename.c> <server_ip> <command> <filename> 
     if (argc < 4) {
         fprintf(stderr, "Usage: %s <server_ip> <port> <command> <filename>\n", argv[0]);
         exit(EXIT_FAILURE);
@@ -203,7 +204,7 @@ int main(int argc, char *argv[]) {
     int port = atoi(argv[2]);
     const char *command = argv[3];
     const char *file_name = argv[4];
-
+//Socket creation and Binding code
     int sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sockfd == -1) {
         die("socket creation failed");
